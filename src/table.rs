@@ -756,26 +756,14 @@ impl StatefulWidget for &Table<'_> {
         if table_area.is_empty() {
             return;
         }
+        let (header_area, rows_area, footer_area) = self.layout(table_area);
 
-        if state.selected.is_some_and(|s| s >= self.rows.len()) {
-            state.select(Some(self.rows.len().saturating_sub(1)));
-        }
-
-        if self.rows.is_empty() {
-            state.select(None);
-        }
+        self.ensure_selection_is_in_bounds(state);
+        self.ensure_selection_is_visible(rows_area, state);
 
         let column_count = self.column_count();
-        if state.selected_column.is_some_and(|s| s >= column_count) {
-            state.select_column(Some(column_count.saturating_sub(1)));
-        }
-        if column_count == 0 {
-            state.select_column(None);
-        }
-
         let selection_width = self.selection_width(state);
         let column_widths = self.get_column_widths(table_area.width, selection_width, column_count);
-        let (header_area, rows_area, footer_area) = self.layout(table_area);
 
         self.render_header(header_area, buf, &column_widths);
 
@@ -807,6 +795,37 @@ impl Table<'_> {
         .split(area);
         let (header_area, rows_area, footer_area) = (layout[1], layout[3], layout[5]);
         (header_area, rows_area, footer_area)
+    }
+
+    /// ensures that the selection points to a valid row
+    fn ensure_selection_is_in_bounds(&self, state: &mut TableState) {
+        if state.selected.is_some_and(|s| s >= self.rows.len()) {
+            state.select(Some(self.rows.len().saturating_sub(1)));
+        }
+
+        if self.rows.is_empty() {
+            state.select(None);
+        }
+
+        let column_count = self.column_count();
+
+        if state.selected_column.is_some_and(|s| s >= column_count) {
+            state.select_column(Some(column_count.saturating_sub(1)));
+        }
+        if column_count == 0 {
+            state.select_column(None);
+        }
+    }
+
+    /// ensures that the selection is visible
+    fn ensure_selection_is_visible(&self, rows_area: Rect, state: &mut TableState) {
+        let last_row = self.rows.len().saturating_sub(1);
+        let visible_rows = usize::from(rows_area.height);
+        if let Some(selected) = state.selected {
+            assert!(selected <= last_row);
+            let min_offset = selected.saturating_sub(visible_rows.saturating_sub(1));
+            state.offset = state.offset.min(selected).max(min_offset);
+        }
     }
 
     /// Render the header cells, if they are not `None`
@@ -848,7 +867,7 @@ impl Table<'_> {
         area: Rect,
         buf: &mut Buffer,
         selection_width: u16,
-        state: &mut TableState,
+        state: &TableState,
         columns_widths: &[Rect],
     ) {
         if self.rows.is_empty() {
@@ -856,7 +875,6 @@ impl Table<'_> {
         }
 
         let (start_index, end_index) = self.visible_rows(state, area);
-        state.offset = start_index;
 
         let mut y_offset = 0;
 
