@@ -274,6 +274,9 @@ pub struct Table<'a> {
     /// Controls how to distribute extra space among the columns
     flex: Flex,
 
+    /// How many rows to try to keep visible before and after the selected row
+    scroll_padding: usize,
+
     /// Determines whether to move the selection into view on render
     selection_must_be_visible: bool,
 
@@ -297,6 +300,7 @@ impl Default for Table<'_> {
             highlight_symbol: Text::default(),
             highlight_spacing: HighlightSpacing::default(),
             flex: Flex::Start,
+            scroll_padding: 0,
             selection_must_be_visible: true,
             allow_overscroll: true,
         }
@@ -734,6 +738,27 @@ impl<'a> Table<'a> {
         self
     }
 
+    /// Set the number of rows to keep visible before and after the selected row when scrolling.
+    ///
+    /// This is similar to the `scrolloff` option in Vim, and ensures context around the selected
+    /// row is visible. If the padding value is too large for the visible area, it will be
+    /// automatically reduced to keep the selected row visible.
+    ///
+    /// This is a fluent setter method which must be chained or used as it consumes self
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use ratatui_table::Table;
+    ///
+    /// let table = Table::default().scroll_padding(1);
+    /// ```
+    #[must_use = "method moves the value of self and returns the modified value"]
+    pub const fn scroll_padding(mut self, padding: usize) -> Self {
+        self.scroll_padding = padding;
+        self
+    }
+
     /// FIXME: :D
     #[must_use = "method moves the value of self and returns the modified value"]
     pub const fn selection_must_be_visible(mut self, selection_must_be_visible: bool) -> Self {
@@ -786,6 +811,7 @@ impl StatefulWidget for &Table<'_> {
         self.ensure_selection_is_in_bounds(state);
         if core::mem::take(&mut state.selected_changed) || self.selection_must_be_visible {
             self.ensure_selection_is_visible(rows_area, state);
+            self.ensure_scroll_padding(rows_area, state);
         }
         if !self.allow_overscroll {
             self.prevent_overscroll(rows_area, state);
@@ -860,6 +886,30 @@ impl Table<'_> {
             assert!(selected <= last_row);
             let min_offset = selected.saturating_sub(visible_rows.saturating_sub(1));
             state.offset = state.offset.min(selected).max(min_offset);
+        }
+    }
+
+    /// FIXME: :D
+    fn ensure_scroll_padding(&self, rows_area: Rect, state: &mut TableState) {
+        if let Some(selected) = state.selected {
+            let view = VisibleRows::new(&self.rows, usize::from(rows_area.height), state.offset);
+            let index_to_display = self.apply_scroll_padding_to_selected_index(
+                selected,
+                usize::from(rows_area.height),
+                view.offset,
+                view.end.saturating_sub(1),
+            );
+            if index_to_display < view.offset {
+                let view = iter::successors(Some(view), VisibleRows::decrement_offset)
+                    .find(|view| view.offset <= index_to_display)
+                    .unwrap();
+                state.offset = view.offset;
+            } else if view.end <= index_to_display {
+                let view = iter::successors(Some(view), VisibleRows::increment_offset)
+                    .find(|view| index_to_display < view.end)
+                    .unwrap();
+                state.offset = view.offset;
+            }
         }
     }
 
@@ -1072,6 +1122,57 @@ impl Table<'_> {
     fn visible_rows(&self, state: &TableState, area: Rect) -> (usize, usize) {
         let view = VisibleRows::new(&self.rows, usize::from(area.height), state.offset);
         (view.offset, view.partial_end())
+    }
+
+    /// Applies scroll padding to the selected index, reducing the padding value to keep the
+    /// selected row on screen even with rows of inconsistent sizes
+    fn apply_scroll_padding_to_selected_index(
+        &self,
+        selected: usize,
+        max_height: usize,
+        first_visible_index: usize,
+        last_visible_index: usize,
+    ) -> usize {
+        let last_valid_index = self.rows.len().saturating_sub(1);
+        if self.scroll_padding == 0 {
+            return selected;
+        }
+
+        let mut scroll_padding = self.scroll_padding.min(last_valid_index);
+        let pad_start = selected.saturating_sub(scroll_padding);
+        let pad_end = selected
+            .saturating_add(scroll_padding)
+            .min(last_valid_index);
+        let mut height_around_selected = self.rows[pad_start..=pad_end]
+            .iter()
+            .map(|row| row.height_with_margin() as usize)
+            .sum::<usize>();
+
+        while scroll_padding > 0 && height_around_selected > max_height {
+            if let Some(index) = selected.checked_sub(scroll_padding) {
+                height_around_selected = height_around_selected
+                    .saturating_sub(self.rows[index].height_with_margin() as usize);
+            }
+            if let Some(index) = selected
+                .checked_add(scroll_padding)
+                .filter(|&index| index <= last_valid_index)
+            {
+                height_around_selected = height_around_selected
+                    .saturating_sub(self.rows[index].height_with_margin() as usize);
+            }
+            scroll_padding -= 1;
+        }
+
+        let selected_after_padding = selected
+            .saturating_add(scroll_padding)
+            .min(last_valid_index);
+        if selected_after_padding >= last_visible_index {
+            selected_after_padding
+        } else if selected.saturating_sub(scroll_padding) < first_visible_index {
+            selected.saturating_sub(scroll_padding)
+        } else {
+            selected
+        }
     }
 
     /// Get all offsets and widths of all user specified columns.
