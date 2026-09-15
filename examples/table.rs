@@ -33,9 +33,18 @@ fn main() -> Result<()> {
     table_state.select_first_column();
     ratatui::run(|terminal| {
         let mut term_height = 0;
+        let mut overscroll = false;
+        let mut selection_in_view = false;
+        let mut scroll_padding = false;
         loop {
             terminal.draw(|frame| {
-                render(frame, &mut table_state);
+                render(
+                    frame,
+                    &mut table_state,
+                    overscroll,
+                    selection_in_view,
+                    scroll_padding,
+                );
                 term_height = frame.area().height;
             })?;
 
@@ -52,6 +61,9 @@ fn main() -> Result<()> {
                     KeyCode::Char('h') | KeyCode::Left => table_state.select_previous_column(),
                     KeyCode::Char('g') => table_state.select_first(),
                     KeyCode::Char('G') => table_state.select_last(),
+                    KeyCode::Char('o') => overscroll = !overscroll,
+                    KeyCode::Char('s') => selection_in_view = !selection_in_view,
+                    KeyCode::Char('p') => scroll_padding = !scroll_padding,
                     _ => {}
                 }
             }
@@ -77,21 +89,66 @@ fn main() -> Result<()> {
 }
 
 /// Render the UI with a table.
-fn render(frame: &mut Frame, table_state: &mut TableState) {
+fn render(
+    frame: &mut Frame,
+    table_state: &mut TableState,
+    overscroll: bool,
+    selection_in_view: bool,
+    scroll_padding: bool,
+) {
     let layout = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).spacing(1);
     let [top, main] = frame.area().layout(&layout);
 
     let title = Line::from_iter([
-        Span::from("Table Widget").bold(),
-        Span::from(" (Press 'q' to quit and arrow keys to navigate)"),
+        Span::from("Table Widget  ").bold(),
+        Span::from(" [q] "),
+        Span::from("quit").italic(),
+        Span::from(" • "),
+        Span::from("[←][↓][↑][→] "),
+        Span::from("navigate").italic(),
+        Span::from(" • "),
+        Span::from("[o] ").fg(if overscroll { Color::Green } else { Color::Red }),
+        Span::from("allow overscroll").italic(),
+        Span::from(" • "),
+        Span::from("[s] ").fg(if selection_in_view {
+            Color::Green
+        } else {
+            Color::Red
+        }),
+        Span::from("force selection to be in view").italic(),
+        Span::from(" • "),
+        Span::from("[p] ").fg(if scroll_padding {
+            Color::Green
+        } else {
+            Color::Red
+        }),
+        Span::from("enable scroll padding").italic(),
+        Span::from(" • "),
+        Span::from("🖱️ "),
+        Span::from("mouse enabled").italic(),
     ]);
     frame.render_widget(title.centered(), top);
 
-    render_table(frame, main, table_state);
+    render_table(
+        frame,
+        main,
+        table_state,
+        overscroll,
+        selection_in_view,
+        scroll_padding,
+    );
 }
 
 /// Render a table with some rows and columns.
-pub fn render_table(frame: &mut Frame, area: Rect, table_state: &mut TableState) {
+pub fn render_table(
+    frame: &mut Frame,
+    area: Rect,
+    table_state: &mut TableState,
+
+    overscroll: bool,
+    selection_in_view: bool,
+    scroll_padding: bool,
+) {
     let header = Row::new(["Ingredient", "Quantity", "Macros"])
         .style(Style::new().bold())
         .bottom_margin(1);
@@ -363,7 +420,10 @@ pub fn render_table(frame: &mut Frame, area: Rect, table_state: &mut TableState)
         .row_highlight_style(Style::new().on_black().bold())
         .column_highlight_style(Color::Gray)
         .cell_highlight_style(Style::new().reversed().yellow())
-        .highlight_symbol("🍴 ");
+        .highlight_symbol("🍴 ")
+        .selection_must_be_visible(selection_in_view)
+        .allow_overscroll(overscroll)
+        .scroll_padding(if scroll_padding { 3 } else { 0 });
 
     frame.render_stateful_widget(table, area, table_state);
 }
