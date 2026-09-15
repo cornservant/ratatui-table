@@ -1,6 +1,8 @@
 //! The [`Table`] widget is used to display multiple rows and columns in a grid and allows selecting
 //! one or multiple cells.
 
+use core::iter;
+
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -271,6 +273,12 @@ pub struct Table<'a> {
 
     /// Controls how to distribute extra space among the columns
     flex: Flex,
+
+    /// Determines whether to move the selection into view on render
+    selection_must_be_visible: bool,
+
+    /// FIXME: ???
+    allow_overscroll: bool,
 }
 
 impl Default for Table<'_> {
@@ -289,6 +297,8 @@ impl Default for Table<'_> {
             highlight_symbol: Text::default(),
             highlight_spacing: HighlightSpacing::default(),
             flex: Flex::Start,
+            selection_must_be_visible: true,
+            allow_overscroll: true,
         }
     }
 }
@@ -723,6 +733,20 @@ impl<'a> Table<'a> {
         self.flex = flex;
         self
     }
+
+    /// FIXME: :D
+    #[must_use = "method moves the value of self and returns the modified value"]
+    pub const fn selection_must_be_visible(mut self, selection_must_be_visible: bool) -> Self {
+        self.selection_must_be_visible = selection_must_be_visible;
+        self
+    }
+
+    /// FIXME: :D
+    #[must_use = "method moves the value of self and returns the modified value"]
+    pub const fn allow_overscroll(mut self, allow_overscroll: bool) -> Self {
+        self.allow_overscroll = allow_overscroll;
+        self
+    }
 }
 
 impl Widget for Table<'_> {
@@ -758,8 +782,14 @@ impl StatefulWidget for &Table<'_> {
         }
         let (header_area, rows_area, footer_area) = self.layout(table_area);
 
+        self.ensure_offset_is_in_bounds(state);
         self.ensure_selection_is_in_bounds(state);
-        self.ensure_selection_is_visible(rows_area, state);
+        if core::mem::take(&mut state.selected_changed) || self.selection_must_be_visible {
+            self.ensure_selection_is_visible(rows_area, state);
+        }
+        if !self.allow_overscroll {
+            self.prevent_overscroll(rows_area, state);
+        }
 
         let column_count = self.column_count();
         let selection_width = self.selection_width(state);
@@ -817,7 +847,12 @@ impl Table<'_> {
         }
     }
 
-    /// ensures that the selection is visible
+    /// if the table is not empty, ensure at least one item is visible
+    fn ensure_offset_is_in_bounds(&self, state: &mut TableState) {
+        state.offset = state.offset.min(self.rows.len().saturating_sub(1));
+    }
+
+    /// if the selected row is not visible, scroll the table to ensure it is visible.
     fn ensure_selection_is_visible(&self, rows_area: Rect, state: &mut TableState) {
         let last_row = self.rows.len().saturating_sub(1);
         let visible_rows = usize::from(rows_area.height);
@@ -825,6 +860,27 @@ impl Table<'_> {
             assert!(selected <= last_row);
             let min_offset = selected.saturating_sub(visible_rows.saturating_sub(1));
             state.offset = state.offset.min(selected).max(min_offset);
+        }
+    }
+
+    /// prevents overscrolling i.e. the view doesn't scroll past the last item
+    fn prevent_overscroll(&self, rows_area: Rect, state: &mut TableState) {
+        let last_index = self.rows.len().saturating_sub(1);
+        let view = VisibleRows::new(
+            self.rows.as_slice(),
+            usize::from(rows_area.height),
+            state.offset,
+        );
+
+        if !view.contains_index(last_index) {
+            return;
+        }
+
+        if let Some(view) = iter::successors(Some(view), VisibleRows::decrement_offset)
+            .take_while(|view| view.contains_index(last_index))
+            .last()
+        {
+            state.offset = view.offset;
         }
     }
 
@@ -1011,48 +1067,11 @@ impl Table<'_> {
     /// The algorithm works as follows:
     /// - start at the offset and calculate the height of the rows that can be displayed within the
     ///   area.
-    /// - if the selected row is not visible, scroll the table to ensure it is visible.
     /// - if there is still space to fill then there's a partial row at the end which should be
     ///   included in the view.
     fn visible_rows(&self, state: &TableState, area: Rect) -> (usize, usize) {
-        let last_row = self.rows.len().saturating_sub(1);
-        let mut start = state.offset.min(last_row);
-
-        if let Some(selected) = state.selected {
-            start = start.min(selected);
-        }
-
-        let mut end = start;
-        let mut height = 0;
-
-        for item in self.rows.iter().skip(start) {
-            if height + item.height > area.height {
-                break;
-            }
-            height += item.height_with_margin();
-            end += 1;
-        }
-
-        if let Some(selected) = state.selected {
-            let selected = selected.min(last_row);
-
-            // scroll down until the selected row is visible
-            while selected >= end {
-                height = height.saturating_add(self.rows[end].height_with_margin());
-                end += 1;
-                while height > area.height {
-                    height = height.saturating_sub(self.rows[start].height_with_margin());
-                    start += 1;
-                }
-            }
-        }
-
-        // Include a partial row if there is space
-        if height < area.height && end < self.rows.len() {
-            end += 1;
-        }
-
-        (start, end)
+        let view = VisibleRows::new(&self.rows, usize::from(area.height), state.offset);
+        (view.offset, view.partial_end())
     }
 
     /// Get all offsets and widths of all user specified columns.
@@ -1141,6 +1160,107 @@ where
     fn from_iter<Iter: IntoIterator<Item = Item>>(rows: Iter) -> Self {
         let widths: [Constraint; 0] = [];
         Self::new(rows, widths)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct VisibleRows<'a> {
+    rows: &'a [Row<'a>],
+    max_height: usize,
+    offset: usize,
+    end: usize,
+    /// total height of rows in rows[offset..end]
+    height: usize,
+}
+
+impl<'a> VisibleRows<'a> {
+    pub(crate) fn new(rows: &'a [Row<'a>], max_height: usize, offset: usize) -> VisibleRows<'a> {
+        assert!(offset <= rows.len());
+
+        let mut end = offset;
+        let mut height = 0;
+
+        while end < rows.len() {
+            let row_height = usize::from(rows[end].height_with_margin());
+            if height + row_height > max_height {
+                break;
+            }
+            height += row_height;
+            end += 1;
+        }
+
+        assert!(end <= rows.len());
+        assert!(offset <= end);
+        assert!(height <= max_height || height == 0);
+
+        Self {
+            rows,
+            max_height,
+            offset,
+            end,
+            height,
+        }
+    }
+
+    pub(crate) fn partial_end(&self) -> usize {
+        self.end + if self.height < self.max_height { 1 } else { 0 }
+    }
+
+    pub(crate) fn contains_index(&self, index: usize) -> bool {
+        self.offset <= index && index < self.end
+    }
+
+    pub(crate) fn decrement_offset(&self) -> Option<Self> {
+        if self.offset == 0 {
+            return None;
+        }
+
+        let mut clone = self.clone();
+
+        clone.offset -= 1;
+        clone.height += usize::from(clone.rows[clone.offset].height_with_margin());
+
+        while clone.height > clone.max_height && clone.end > clone.offset {
+            clone.end -= 1;
+            clone.height -= usize::from(clone.rows[clone.offset].height_with_margin());
+        }
+
+        assert!(clone.offset <= clone.end);
+        assert!(clone.height <= clone.max_height || clone.height == 0);
+
+        Some(clone)
+    }
+
+    pub(crate) fn increment_offset(&self) -> Option<Self> {
+        if self.offset >= self.rows.len() {
+            return None;
+        }
+
+        let mut clone = self.clone();
+
+        if self.offset >= self.end {
+            assert_eq!(self.height, 0);
+            clone.offset += 1;
+            clone.end += 1;
+            return Some(clone);
+        }
+
+        clone.height -= usize::from(clone.rows[clone.offset].height_with_margin());
+        clone.offset += 1;
+
+        while clone.end < clone.rows.len() {
+            let row_height = usize::from(clone.rows[clone.end].height_with_margin());
+            if clone.height + row_height > clone.max_height {
+                break;
+            }
+            clone.height += row_height;
+            clone.end += 1;
+        }
+
+        assert!(clone.offset <= clone.end);
+        assert!(clone.height <= clone.max_height || clone.height == 0);
+
+        Some(clone)
     }
 }
 

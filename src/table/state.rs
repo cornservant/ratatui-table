@@ -56,6 +56,7 @@ pub struct TableState {
     pub(crate) offset: usize,
     pub(crate) selected: Option<usize>,
     pub(crate) selected_column: Option<usize>,
+    pub(crate) selected_changed: bool,
 }
 
 impl TableState {
@@ -73,6 +74,7 @@ impl TableState {
             offset: 0,
             selected: None,
             selected_column: None,
+            selected_changed: false,
         }
     }
 
@@ -280,6 +282,7 @@ impl TableState {
     /// ```
     pub const fn select(&mut self, index: Option<usize>) {
         self.selected = index;
+        self.selected_changed = true;
         if index.is_none() {
             self.offset = 0;
         }
