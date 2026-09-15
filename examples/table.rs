@@ -15,7 +15,8 @@
 //! [examples readme]: https://github.com/ratatui/ratatui/blob/main/examples/README.md
 
 use color_eyre::Result;
-use crossterm::event::{self, KeyCode};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode};
+use crossterm::execute;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
@@ -25,21 +26,49 @@ use ratatui_table::{Row, Table, TableState};
 fn main() -> Result<()> {
     color_eyre::install()?;
 
+    execute!(std::io::stdout(), EnableMouseCapture)?;
+
     let mut table_state = TableState::default();
     table_state.select_first();
     table_state.select_first_column();
     ratatui::run(|terminal| {
+        let mut term_height = 0;
         loop {
-            terminal.draw(|frame| render(frame, &mut table_state))?;
-            if let Some(key) = event::read()?.as_key_press_event() {
+            terminal.draw(|frame| {
+                render(frame, &mut table_state);
+                term_height = frame.area().height;
+            })?;
+
+            let event = event::read()?;
+            if let Some(key) = event.as_key_press_event() {
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        execute!(std::io::stdout(), DisableMouseCapture)?;
+                        return Ok(());
+                    }
                     KeyCode::Char('j') | KeyCode::Down => table_state.select_next(),
                     KeyCode::Char('k') | KeyCode::Up => table_state.select_previous(),
                     KeyCode::Char('l') | KeyCode::Right => table_state.select_next_column(),
                     KeyCode::Char('h') | KeyCode::Left => table_state.select_previous_column(),
                     KeyCode::Char('g') => table_state.select_first(),
                     KeyCode::Char('G') => table_state.select_last(),
+                    _ => {}
+                }
+            }
+
+            if let Some(mouse) = event.as_mouse_event() {
+                match mouse.kind {
+                    event::MouseEventKind::Down(_button) => {
+                        if mouse.row >= 4 && mouse.row < term_height.saturating_sub(1) {
+                            table_state.select(Some(
+                                table_state.offset() + usize::from(mouse.row.saturating_sub(4)),
+                            ));
+                        }
+                    }
+                    event::MouseEventKind::ScrollDown => *table_state.offset_mut() += 3,
+                    event::MouseEventKind::ScrollUp => {
+                        *table_state.offset_mut() = table_state.offset().saturating_sub(3)
+                    }
                     _ => {}
                 }
             }
